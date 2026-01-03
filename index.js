@@ -1,13 +1,20 @@
 const TelegramBot = require('node-telegram-bot-api');
 
-const token = process.env.BOT_TOKEN;
-const managerId = process.env.MANAGER_TELEGRAM_ID;
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const MANAGER_ID = Number(process.env.MANAGER_TELEGRAM_ID);
 
-const bot = new TelegramBot(token, { polling: true });
+if (!BOT_TOKEN || !MANAGER_ID) {
+  throw new Error('❌ BOT_TOKEN або MANAGER_TELEGRAM_ID не задані');
+}
 
-// Тимчасове сховище дозволених користувачів
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+
+// Тимчасове сховище підтверджених магазинів
 const approvedUsers = new Set();
 
+/**
+ * /start
+ */
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
     msg.chat.id,
@@ -15,54 +22,88 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
+/**
+ * Обробка текстових повідомлень (коди магазинів)
+ */
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
-  const text = msg.text;
+  const text = msg.text?.trim();
 
   if (!text || text.startsWith('/')) return;
 
-  // Якщо користувач вже підтверджений
+  // Якщо магазин вже підтверджений
   if (approvedUsers.has(chatId)) {
-    bot.sendMessage(chatId, '✅ Доступ підтверджено. Ви можете оформлювати заявки.');
+    bot.sendMessage(
+      chatId,
+      '✅ Доступ підтверджено. Ви можете оформлювати заявки.'
+    );
     return;
   }
 
-  // Запит на доступ
-  bot.sendMessage(managerId, {
-    text: `🔐 Запит на доступ\nКод: ${text}\nTelegram ID: ${chatId}`,
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '✅ Підтвердити', callback_data: `approve:${chatId}` },
-          { text: '❌ Відхилити', callback_data: `reject:${chatId}` }
+  // Повідомлення менеджеру з кнопками
+  bot.sendMessage(
+    MANAGER_ID,
+    `🔐 Запит на доступ\nКод: ${text}\nTelegram ID: ${chatId}`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '✅ Підтвердити', callback_data: `approve:${chatId}` },
+            { text: '❌ Відхилити', callback_data: `reject:${chatId}` }
+          ]
         ]
-      ]
+      }
     }
-  });
+  );
 
-  bot.sendMessage(chatId, '⏳ Запит відправлено менеджеру. Очікуйте підтвердження.');
+  // Відповідь магазину
+  bot.sendMessage(
+    chatId,
+    '⏳ Запит відправлено менеджеру. Очікуйте підтвердження.'
+  );
 });
 
-// Обробка кнопок менеджера
+/**
+ * Обробка кнопок менеджера
+ */
 bot.on('callback_query', (query) => {
   const data = query.data;
   const managerChatId = query.message.chat.id;
 
-  if (String(managerChatId) !== String(managerId)) {
-    bot.answerCallbackQuery(query.id, { text: '⛔ Немає доступу' });
+  // Захист: кнопки тільки для менеджера
+  if (managerChatId !== MANAGER_ID) {
+    bot.answerCallbackQuery(query.id, {
+      text: '⛔ Немає доступу'
+    });
     return;
   }
 
   const [action, userId] = data.split(':');
+  const targetUserId = Number(userId);
 
   if (action === 'approve') {
-    approvedUsers.add(Number(userId));
-    bot.sendMessage(userId, '✅ Ваш доступ підтверджено. Можете працювати.');
-    bot.answerCallbackQuery(query.id, { text: 'Доступ підтверджено' });
+    approvedUsers.add(targetUserId);
+
+    bot.sendMessage(
+      targetUserId,
+      '✅ Ваш доступ підтверджено. Можете працювати.'
+    );
+
+    bot.answerCallbackQuery(query.id, {
+      text: 'Доступ підтверджено'
+    });
   }
 
   if (action === 'reject') {
-    bot.sendMessage(userId, '❌ У доступі відмовлено.');
-    bot.answerCallbackQuery(query.id, { text: 'Запит відхилено' });
+    bot.sendMessage(
+      targetUserId,
+      '❌ У доступі відмовлено.'
+    );
+
+    bot.answerCallbackQuery(query.id, {
+      text: 'Запит відхилено'
+    });
   }
 });
+
+console.log('🤖 Telegram bot started successfully');
