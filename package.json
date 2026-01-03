@@ -1,11 +1,16 @@
 {
-  "name": "telegram-bot-mvp",
+  "name": "telegram-order-bot",
   "version": "1.0.0",
+  "description": "Telegram bot for store orders with manager approval, order statuses and Excel export",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "node-telegram-bot-api": "^0.61.0"
+    "node-telegram-bot-api": "^0.61.0",
+    "exceljs": "^4.4.0"
   }
 }
