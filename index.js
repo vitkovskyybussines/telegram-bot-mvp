@@ -15,10 +15,17 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
  * ===== РОБОТА З ФАЙЛОМ =====
  */
 function loadStores() {
-  if (!fs.existsSync(STORES_FILE)) {
+  try {
+    if (!fs.existsSync(STORES_FILE)) {
+      const initialData = { approved: {} };
+      fs.writeFileSync(STORES_FILE, JSON.stringify(initialData, null, 2));
+      return initialData;
+    }
+    return JSON.parse(fs.readFileSync(STORES_FILE));
+  } catch (err) {
+    console.error('❌ Error loading stores:', err);
     return { approved: {} };
   }
-  return JSON.parse(fs.readFileSync(STORES_FILE));
 }
 
 function saveStores(data) {
@@ -36,7 +43,46 @@ bot.onText(/\/start/, (msg) => {
 });
 
 /**
- * Обробка повідомлень
+ * Команда менеджера: список магазинів з кнопкою видалення
+ */
+bot.onText(/\/stores/, (msg) => {
+  const chatId = msg.chat.id;
+
+  if (chatId !== MANAGER_ID) {
+    bot.sendMessage(chatId, '⛔ Команда доступна лише менеджеру');
+    return;
+  }
+
+  const stores = loadStores();
+  const entries = Object.entries(stores.approved);
+
+  if (entries.length === 0) {
+    bot.sendMessage(chatId, 'ℹ️ Підтверджених магазинів поки немає');
+    return;
+  }
+
+  for (const [telegramId, code] of entries) {
+    bot.sendMessage(
+      chatId,
+      `🏪 Магазин: ${code}\nTelegram ID: ${telegramId}`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '🗑 Видалити доступ',
+                callback_data: `remove_store:${telegramId}`
+              }
+            ]
+          ]
+        }
+      }
+    );
+  }
+});
+
+/**
+ * Обробка повідомлень магазинів
  */
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
@@ -63,8 +109,14 @@ bot.on('message', (msg) => {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '✅ Підтвердити', callback_data: `approve:${chatId}:${text}` },
-            { text: '❌ Відхилити', callback_data: `reject:${chatId}` }
+            {
+              text: '✅ Підтвердити',
+              callback_data: `approve:${chatId}:${text}`
+            },
+            {
+              text: '❌ Відхилити',
+              callback_data: `reject:${chatId}`
+            }
           ]
         ]
       }
@@ -94,7 +146,7 @@ bot.on('callback_query', async (query) => {
   const userId = Number(parts[1]);
   const storeCode = parts[2];
 
-  // Прибираємо кнопки
+  // Прибираємо кнопки після натискання
   await bot.editMessageReplyMarkup(
     { inline_keyboard: [] },
     {
@@ -114,7 +166,9 @@ bot.on('callback_query', async (query) => {
       `✅ Ваш доступ підтверджено.\nКод магазину: ${storeCode}`
     );
 
-    bot.answerCallbackQuery(query.id, { text: 'Доступ підтверджено' });
+    bot.answerCallbackQuery(query.id, {
+      text: 'Доступ підтверджено'
+    });
   }
 
   if (action === 'reject') {
@@ -123,8 +177,25 @@ bot.on('callback_query', async (query) => {
       '❌ У доступі відмовлено.'
     );
 
-    bot.answerCallbackQuery(query.id, { text: 'Запит відхилено' });
+    bot.answerCallbackQuery(query.id, {
+      text: 'Запит відхилено'
+    });
+  }
+
+  if (action === 'remove_store') {
+    if (stores.approved[userId]) {
+      delete stores.approved[userId];
+      saveStores(stores);
+
+      bot.answerCallbackQuery(query.id, {
+        text: 'Доступ видалено'
+      });
+    } else {
+      bot.answerCallbackQuery(query.id, {
+        text: 'Магазин не знайдено'
+      });
+    }
   }
 });
 
-console.log('🤖 Telegram bot with store storage started');
+console.log('🤖 Telegram bot started with store management');
