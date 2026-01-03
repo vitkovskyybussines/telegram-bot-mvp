@@ -1,201 +1,102 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const ExcelJS = require('exceljs');
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MANAGER_ID = Number(process.env.MANAGER_TELEGRAM_ID);
-const STORES_FILE = './stores.json';
 
-if (!BOT_TOKEN || !MANAGER_ID) {
-  throw new Error('❌ BOT_TOKEN або MANAGER_TELEGRAM_ID не задані');
-}
+const STORES_FILE = './stores.json';
+const ORDERS_FILE = './orders.json';
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-/**
- * ===== РОБОТА З ФАЙЛОМ =====
- */
-function loadStores() {
-  try {
-    if (!fs.existsSync(STORES_FILE)) {
-      const initialData = { approved: {} };
-      fs.writeFileSync(STORES_FILE, JSON.stringify(initialData, null, 2));
-      return initialData;
-    }
-    return JSON.parse(fs.readFileSync(STORES_FILE));
-  } catch (err) {
-    console.error('❌ Error loading stores:', err);
-    return { approved: {} };
+/* ===== HELPERS ===== */
+function load(file, fallback) {
+  if (!fs.existsSync(file)) {
+    fs.writeFileSync(file, JSON.stringify(fallback, null, 2));
+    return fallback;
   }
+  return JSON.parse(fs.readFileSync(file));
 }
 
-function saveStores(data) {
-  fs.writeFileSync(STORES_FILE, JSON.stringify(data, null, 2));
+function formatDate(date) {
+  return date ? new Date(date).toLocaleString('uk-UA') : '';
 }
 
-/**
- * /start
- */
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    '👋 Вітаю!\n\nВведіть код магазину для доступу.'
-  );
-});
+const STATUS_TEXT = {
+  pending: 'Очікує підтвердження',
+  accepted: 'Прийнята',
+  formed: 'Сформована'
+};
 
-/**
- * Команда менеджера: список магазинів з кнопкою видалення
- */
-bot.onText(/\/stores/, (msg) => {
-  const chatId = msg.chat.id;
-
-  if (chatId !== MANAGER_ID) {
-    bot.sendMessage(chatId, '⛔ Команда доступна лише менеджеру');
-    return;
+/* ===== EXPORT STORES ===== */
+bot.onText(/\/export_stores/, async (msg) => {
+  if (msg.chat.id !== MANAGER_ID) {
+    return bot.sendMessage(msg.chat.id, '⛔ Команда доступна лише менеджеру');
   }
 
-  const stores = loadStores();
-  const entries = Object.entries(stores.approved);
+  const data = load(STORES_FILE, { stores: {} });
 
-  if (entries.length === 0) {
-    bot.sendMessage(chatId, 'ℹ️ Підтверджених магазинів поки немає');
-    return;
-  }
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Stores');
 
-  for (const [telegramId, code] of entries) {
-    bot.sendMessage(
-      chatId,
-      `🏪 Магазин: ${code}\nTelegram ID: ${telegramId}`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: '🗑 Видалити доступ',
-                callback_data: `remove_store:${telegramId}`
-              }
-            ]
-          ]
-        }
-      }
-    );
-  }
-});
+  ws.columns = [
+    { header: 'Telegram ID', key: 'id', width: 20 },
+    { header: 'Код магазину', key: 'code', width: 20 },
+    { header: 'Статус', key: 'status', width: 15 },
+    { header: 'Дата підтвердження', key: 'date', width: 25 }
+  ];
 
-/**
- * Обробка повідомлень магазинів
- */
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text?.trim();
-
-  if (!text || text.startsWith('/')) return;
-
-  const stores = loadStores();
-
-  // Якщо магазин вже підтверджений
-  if (stores.approved[chatId]) {
-    bot.sendMessage(
-      chatId,
-      `✅ Доступ підтверджено.\nКод магазину: ${stores.approved[chatId]}`
-    );
-    return;
-  }
-
-  // Запит менеджеру
-  bot.sendMessage(
-    MANAGER_ID,
-    `🔐 Запит на доступ\nКод: ${text}\nTelegram ID: ${chatId}`,
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: '✅ Підтвердити',
-              callback_data: `approve:${chatId}:${text}`
-            },
-            {
-              text: '❌ Відхилити',
-              callback_data: `reject:${chatId}`
-            }
-          ]
-        ]
-      }
-    }
-  );
-
-  bot.sendMessage(
-    chatId,
-    '⏳ Запит відправлено менеджеру. Очікуйте підтвердження.'
-  );
-});
-
-/**
- * Кнопки менеджера
- */
-bot.on('callback_query', async (query) => {
-  const managerChatId = query.message.chat.id;
-
-  if (managerChatId !== MANAGER_ID) {
-    return bot.answerCallbackQuery(query.id, {
-      text: '⛔ Немає доступу'
+  for (const [id, store] of Object.entries(data.stores)) {
+    ws.addRow({
+      id,
+      code: store.code,
+      status: store.status,
+      date: formatDate(store.approvedAt)
     });
   }
 
-  const parts = query.data.split(':');
-  const action = parts[0];
-  const userId = Number(parts[1]);
-  const storeCode = parts[2];
+  const filePath = './stores.xlsx';
+  await wb.xlsx.writeFile(filePath);
 
-  // Прибираємо кнопки після натискання
-  await bot.editMessageReplyMarkup(
-    { inline_keyboard: [] },
-    {
-      chat_id: query.message.chat.id,
-      message_id: query.message.message_id
-    }
-  );
-
-  const stores = loadStores();
-
-  if (action === 'approve') {
-    stores.approved[userId] = storeCode;
-    saveStores(stores);
-
-    bot.sendMessage(
-      userId,
-      `✅ Ваш доступ підтверджено.\nКод магазину: ${storeCode}`
-    );
-
-    bot.answerCallbackQuery(query.id, {
-      text: 'Доступ підтверджено'
-    });
-  }
-
-  if (action === 'reject') {
-    bot.sendMessage(
-      userId,
-      '❌ У доступі відмовлено.'
-    );
-
-    bot.answerCallbackQuery(query.id, {
-      text: 'Запит відхилено'
-    });
-  }
-
-  if (action === 'remove_store') {
-    if (stores.approved[userId]) {
-      delete stores.approved[userId];
-      saveStores(stores);
-
-      bot.answerCallbackQuery(query.id, {
-        text: 'Доступ видалено'
-      });
-    } else {
-      bot.answerCallbackQuery(query.id, {
-        text: 'Магазин не знайдено'
-      });
-    }
-  }
+  bot.sendDocument(msg.chat.id, filePath);
 });
 
-console.log('🤖 Telegram bot started with store management');
+/* ===== EXPORT ORDERS ===== */
+bot.onText(/\/export_orders/, async (msg) => {
+  if (msg.chat.id !== MANAGER_ID) {
+    return bot.sendMessage(msg.chat.id, '⛔ Команда доступна лише менеджеру');
+  }
+
+  const data = load(ORDERS_FILE, { orders: {} });
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Orders');
+
+  ws.columns = [
+    { header: '№ заявки', key: 'id', width: 10 },
+    { header: 'Магазин', key: 'store', width: 20 },
+    { header: 'Telegram ID', key: 'storeId', width: 20 },
+    { header: 'Статус', key: 'status', width: 20 },
+    { header: 'Дата', key: 'date', width: 25 },
+    { header: 'Текст заявки', key: 'text', width: 50 }
+  ];
+
+  for (const [id, order] of Object.entries(data.orders)) {
+    ws.addRow({
+      id,
+      store: order.storeCode,
+      storeId: order.storeId,
+      status: STATUS_TEXT[order.status],
+      date: formatDate(order.createdAt),
+      text: order.text
+    });
+  }
+
+  const filePath = './orders.xlsx';
+  await wb.xlsx.writeFile(filePath);
+
+  bot.sendDocument(msg.chat.id, filePath);
+});
+
+console.log('🤖 Bot with Excel export started');
