@@ -9,9 +9,27 @@ if (!BOT_TOKEN || !MANAGER_ID) {
   process.exit(1);
 }
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+/* ================= SAFE START ================= */
+
+// ⛔ ПОЛЛІНГ ВКЛЮЧАЄМО ТІЛЬКИ ПІСЛЯ СКИДАННЯ WEBHOOK
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+
+(async () => {
+  try {
+    console.log('🔄 Видаляємо webhook...');
+    await bot.deleteWebhook({ drop_pending_updates: true });
+    console.log('✅ Webhook видалено');
+
+    await bot.startPolling();
+    console.log('🤖 Bot started with polling');
+  } catch (err) {
+    console.error('❌ Помилка старту бота:', err);
+    process.exit(1);
+  }
+})();
 
 /* ================= FILES ================= */
+
 const STORES_FILE = './stores.json';
 const REQUESTS_FILE = './requests.json';
 const REMINDERS_FILE = './reminders.json';
@@ -29,6 +47,7 @@ function writeJSON(path, data) {
 }
 
 /* ================= STATE ================= */
+
 const state = {};
 
 /* ================= MENUS ================= */
@@ -50,14 +69,6 @@ function showStoreMenu(chatId) {
   bot.sendMessage(chatId, '🏪 Меню магазину', {
     reply_markup: {
       keyboard: [
-        [
-          {
-            text: '🛒 Каталог',
-            web_app: {
-              url: 'https://vitkovskyybussines.github.io/telegram-miniapp-catalog/'
-            }
-          }
-        ],
         ['➕ Створити заявку'],
         ['📄 Мої заявки']
       ],
@@ -82,7 +93,7 @@ bot.onText(/\/start/, (msg) => {
   if (store) {
     showStoreMenu(chatId);
   } else {
-    bot.sendMessage(chatId, '🔐 Введіть код магазину (наприклад SHOP-001)');
+    bot.sendMessage(chatId, '🔐 Введіть код магазину (SHOP-001)');
     state[chatId] = 'WAIT_STORE_CODE';
   }
 });
@@ -90,8 +101,6 @@ bot.onText(/\/start/, (msg) => {
 /* ================= STORE ACCESS ================= */
 
 bot.on('message', (msg) => {
-  handleReminders();
-
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
 
@@ -126,47 +135,9 @@ bot.on('message', (msg) => {
   }
 });
 
-/* ================= MINI APP DATA ================= */
-
-bot.on('message', (msg) => {
-  if (!msg.web_app_data) return;
-
-  const chatId = msg.chat.id;
-  const data = JSON.parse(msg.web_app_data.data);
-
-  const stores = readJSON(STORES_FILE, []);
-  const store = stores.find(s => s.userId === chatId);
-  if (!store) return;
-
-  const requests = readJSON(REQUESTS_FILE, []);
-  const id = requests.length + 1;
-
-  const text =
-`Заявка з каталогу:
-${data.title} — ${data.weight} кг
-Коментар: ${data.comment || '-'}`;
-
-  const req = {
-    id,
-    userId: chatId,
-    storeCode: store.storeCode,
-    text,
-    status: 'pending',
-    createdAt: new Date().toISOString().slice(0, 10)
-  };
-
-  requests.push(req);
-  writeJSON(REQUESTS_FILE, requests);
-
-  bot.sendMessage(chatId, `✅ Заявка #${id} відправлена`);
-  sendRequestToManager(req);
-});
-
 /* ================= CALLBACKS ================= */
 
 bot.on('callback_query', async (q) => {
-  handleReminders();
-
   const data = q.data;
   const msg = q.message;
 
@@ -177,7 +148,7 @@ bot.on('callback_query', async (q) => {
     writeJSON(STORES_FILE, stores);
 
     await bot.sendMessage(userId, '✅ Доступ підтверджено');
-    await showStoreMenu(userId);
+    showStoreMenu(userId);
     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, msg);
   }
 
@@ -198,14 +169,18 @@ bot.on('callback_query', async (q) => {
 
     if (status === 'accepted') {
       await bot.sendMessage(req.userId, `🟡 Заявка #${req.id} прийнята`);
-      await bot.editMessageReplyMarkup(
-        { inline_keyboard: [[{ text: '🟢 Сформована', callback_data: `status_${req.id}_formed` }]] },
-        msg
-      );
+      await bot.editMessageReplyMarkup({
+        inline_keyboard: [[
+          { text: '🟢 Сформована', callback_data: `status_${req.id}_formed` }
+        ]]
+      }, msg);
     }
 
     if (status === 'formed') {
-      await bot.sendMessage(req.userId, `🟢 Заявка #${req.id} сформована\nОчікуйте доставку`);
+      await bot.sendMessage(
+        req.userId,
+        `🟢 Заявка #${req.id} сформована\nОчікуйте доставку`
+      );
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, msg);
     }
   }
@@ -213,54 +188,6 @@ bot.on('callback_query', async (q) => {
   bot.answerCallbackQuery(q.id);
 });
 
-/* ================= SEND TO MANAGER ================= */
+/* ================= READY ================= */
 
-function sendRequestToManager(r) {
-  const buttons = [];
-
-  if (r.status === 'pending') {
-    buttons.push([{ text: '🟡 Прийнята', callback_data: `status_${r.id}_accepted` }]);
-  }
-
-  if (r.status === 'accepted') {
-    buttons.push([{ text: '🟢 Сформована', callback_data: `status_${r.id}_formed` }]);
-  }
-
-  bot.sendMessage(
-    MANAGER_ID,
-    `📦 Заявка #${r.id}
-🏪 Магазин: ${r.storeCode}
-📌 Статус: ${r.status}
-
-${r.text}`,
-    buttons.length ? { reply_markup: { inline_keyboard: buttons } } : {}
-  );
-}
-
-/* ================= REMINDERS ================= */
-
-function handleReminders() {
-  const now = new Date();
-  if (now.getDay() === 6 || now.getHours() < 15) return;
-
-  const today = now.toISOString().slice(0, 10);
-  const reminders = readJSON(REMINDERS_FILE, {});
-  if (reminders[today]) return;
-
-  const stores = readJSON(STORES_FILE, []);
-  const requests = readJSON(REQUESTS_FILE, []);
-
-  stores.forEach(store => {
-    const hasToday = requests.some(
-      r => r.userId === store.userId && r.createdAt === today
-    );
-    if (!hasToday) {
-      bot.sendMessage(store.userId, '⏰ Нагадування:\nВи ще не зробили заявку на сьогодні');
-    }
-  });
-
-  reminders[today] = true;
-  writeJSON(REMINDERS_FILE, reminders);
-}
-
-console.log('🤖 Bot started with Mini App integrated');
+console.log('🚀 index.js loaded');
