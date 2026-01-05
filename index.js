@@ -17,15 +17,16 @@ const REQUESTS_FILE = './requests.json';
 const REMINDERS_FILE = './reminders.json';
 
 function readJSON(path, def) {
+  if (!fs.existsSync(path)) {
+    fs.writeFileSync(path, JSON.stringify(def, null, 2));
+    return def;
+  }
+
   try {
-    if (!fs.existsSync(path)) {
-      fs.writeFileSync(path, JSON.stringify(def, null, 2));
-      return def;
-    }
-    const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-    return Array.isArray(def) && !Array.isArray(data) ? def : data;
+    const data = JSON.parse(fs.readFileSync(path));
+    return data;
   } catch (e) {
-    console.error(`❌ JSON error in ${path}`, e);
+    console.error('❌ JSON error in', path);
     return def;
   }
 }
@@ -83,7 +84,9 @@ bot.onText(/\/start/, (msg) => {
   }
 
   const stores = readJSON(STORES_FILE, []);
-  const store = stores.find(s => s.userId === chatId);
+  const store = Array.isArray(stores)
+    ? stores.find(s => s.userId === chatId)
+    : null;
 
   if (store) {
     showStoreMenu(chatId);
@@ -96,27 +99,21 @@ bot.onText(/\/start/, (msg) => {
 /* ================= STORE ACCESS ================= */
 
 bot.on('message', (msg) => {
-  handleReminders();
-
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
 
-  // 🔴 ЄДИНА ЗМІНА ТУТ
-  if (!text) return;
-
-  if (chatId === MANAGER_ID) return;
+  if (!text || chatId === MANAGER_ID) return;
 
   if (state[chatId] === 'WAIT_STORE_CODE') {
-    const storeCode = text.toUpperCase();
-
-    if (!/^SHOP-\d+$/.test(storeCode)) {
-      bot.sendMessage(chatId, '❌ Невірний код. Формат: SHOP-001');
+    if (!/^SHOP-\d+$/i.test(text)) {
+      bot.sendMessage(chatId, '❌ Невірний формат коду. Приклад: SHOP-001');
       return;
     }
 
+    const storeCode = text.toUpperCase();
     const stores = readJSON(STORES_FILE, []);
 
-    if (stores.find(s => s.userId === chatId)) {
+    if (Array.isArray(stores) && stores.find(s => s.userId === chatId)) {
       showStoreMenu(chatId);
       state[chatId] = null;
       return;
@@ -150,11 +147,13 @@ bot.on('message', (msg) => {
   const data = JSON.parse(msg.web_app_data.data);
 
   const stores = readJSON(STORES_FILE, []);
+  if (!Array.isArray(stores)) return;
+
   const store = stores.find(s => s.userId === chatId);
   if (!store) return;
 
   const requests = readJSON(REQUESTS_FILE, []);
-  const id = requests.length + 1;
+  const id = Array.isArray(requests) ? requests.length + 1 : 1;
 
   const text =
 `Заявка з каталогу:
@@ -180,14 +179,13 @@ ${data.title} — ${data.weight} кг
 /* ================= CALLBACKS ================= */
 
 bot.on('callback_query', async (q) => {
-  handleReminders();
-
   const data = q.data;
   const msg = q.message;
 
   if (data.startsWith('access_ok_')) {
     const [, , userId, storeCode] = data.split('_');
     const stores = readJSON(STORES_FILE, []);
+
     stores.push({ userId: Number(userId), storeCode });
     writeJSON(STORES_FILE, stores);
 
@@ -200,24 +198,6 @@ bot.on('callback_query', async (q) => {
     const userId = Number(data.split('_')[2]);
     await bot.sendMessage(userId, '❌ Доступ відхилено');
     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, msg);
-  }
-
-  if (data.startsWith('status_')) {
-    const [, id, status] = data.split('_');
-    const requests = readJSON(REQUESTS_FILE, []);
-    const req = requests.find(r => r.id === Number(id));
-    if (!req) return;
-
-    req.status = status;
-    writeJSON(REQUESTS_FILE, requests);
-
-    if (status === 'accepted') {
-      await bot.sendMessage(req.userId, `🟡 Заявка #${req.id} прийнята`);
-    }
-
-    if (status === 'formed') {
-      await bot.sendMessage(req.userId, `🟢 Заявка #${req.id} сформована`);
-    }
   }
 
   bot.answerCallbackQuery(q.id);
@@ -236,30 +216,34 @@ ${r.text}`
   );
 }
 
-/* ================= REMINDERS ================= */
+/* ================= MANAGER: ALL REQUESTS ================= */
+/* === ЦЕ ЄДИНЕ, ЩО БУЛО ДОДАНО === */
 
-function handleReminders() {
-  const now = new Date();
-  if (now.getDay() === 6 || now.getHours() < 15) return;
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text?.trim();
 
-  const today = now.toISOString().slice(0, 10);
-  const reminders = readJSON(REMINDERS_FILE, {});
-  if (reminders[today]) return;
+  if (chatId !== MANAGER_ID) return;
 
-  const stores = readJSON(STORES_FILE, []);
-  const requests = readJSON(REQUESTS_FILE, []);
+  if (text === '📦 Всі заявки') {
+    const requests = readJSON(REQUESTS_FILE, []);
 
-  stores.forEach(store => {
-    const hasToday = requests.some(
-      r => r.userId === store.userId && r.createdAt === today
-    );
-    if (!hasToday) {
-      bot.sendMessage(store.userId, '⏰ Нагадування: ви ще не зробили заявку');
+    if (!Array.isArray(requests) || requests.length === 0) {
+      bot.sendMessage(chatId, '📭 Заявок ще немає');
+      return;
     }
-  });
 
-  reminders[today] = true;
-  writeJSON(REMINDERS_FILE, reminders);
-}
+    requests.forEach(r => {
+      bot.sendMessage(
+        chatId,
+        `📦 Заявка #${r.id}
+🏪 Магазин: ${r.storeCode}
+📌 Статус: ${r.status}
+
+${r.text}`
+      );
+    });
+  }
+});
 
 console.log('🤖 Bot started');
