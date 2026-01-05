@@ -12,7 +12,7 @@ if (!BOT_TOKEN || !MANAGER_ID) {
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-/* ================== FILES ================== */
+/* ================= FILES ================= */
 const DATA_DIR = path.join(__dirname, 'data');
 const STORES_FILE = path.join(DATA_DIR, 'stores.json');
 const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
@@ -23,35 +23,28 @@ if (!fs.existsSync(REQUESTS_FILE)) fs.writeFileSync(REQUESTS_FILE, '[]');
 
 const readStores = () => JSON.parse(fs.readFileSync(STORES_FILE));
 const saveStores = (d) => fs.writeFileSync(STORES_FILE, JSON.stringify(d, null, 2));
-
 const readRequests = () => JSON.parse(fs.readFileSync(REQUESTS_FILE));
 const saveRequests = (d) => fs.writeFileSync(REQUESTS_FILE, JSON.stringify(d, null, 2));
 
-/* ================== KEYBOARDS ================== */
-const managerKeyboard = {
-  reply_markup: {
-    keyboard: [
-      ['📦 Всі заявки'],
-      ['⏳ Очікують', '🟡 Прийняті', '🟢 Сформовані']
-    ],
-    resize_keyboard: true
-  }
-};
-
+/* ================= KEYBOARDS ================= */
 const storeKeyboard = {
   reply_markup: {
-    keyboard: [
-      ['➕ Створити заявку'],
-      ['📄 Мої заявки']
-    ],
+    keyboard: [['➕ Створити заявку'], ['📄 Мої заявки']],
     resize_keyboard: true
   }
 };
 
-/* ================== STATE ================== */
-const waitingForOrderText = new Set();
+const managerKeyboard = {
+  reply_markup: {
+    keyboard: [['📦 Всі заявки']],
+    resize_keyboard: true
+  }
+};
 
-/* ================== /start ================== */
+/* ================= STATE ================= */
+const waitingForOrder = new Set();
+
+/* ================= /start ================= */
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   const stores = readStores();
@@ -61,15 +54,15 @@ bot.onText(/\/start/, (msg) => {
     return;
   }
 
-  if (stores[chatId] && stores[chatId].status === 'approved') {
+  if (stores[chatId]?.status === 'approved') {
     bot.sendMessage(chatId, '🏪 Панель магазину', storeKeyboard);
     return;
   }
 
-  bot.sendMessage(chatId, '🔐 Введіть код магазину для доступу (наприклад SHOP-001)');
+  bot.sendMessage(chatId, '🔐 Введіть код магазину (наприклад SHOP-001)');
 });
 
-/* ================== STORE CODE ================== */
+/* ================= STORE ACCESS ================= */
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
@@ -77,20 +70,20 @@ bot.on('message', (msg) => {
 
   const stores = readStores();
 
-  if (chatId !== MANAGER_ID && text.startsWith('SHOP-')) {
+  if (text.startsWith('SHOP-') && chatId !== MANAGER_ID) {
     if (stores[chatId]) {
-      bot.sendMessage(chatId, 'ℹ️ Запит уже надіслано або доступ активний');
+      bot.sendMessage(chatId, 'ℹ️ Запит вже надіслано');
       return;
     }
 
     stores[chatId] = { code: text, status: 'pending' };
     saveStores(stores);
 
-    bot.sendMessage(chatId, '⏳ Запит відправлено менеджеру, очікуйте підтвердження');
+    bot.sendMessage(chatId, '⏳ Запит на доступ відправлено менеджеру');
 
     bot.sendMessage(
       MANAGER_ID,
-      `🔐 Запит на доступ\nКод: ${text}\nTelegram ID: ${chatId}`,
+      `🔐 Запит на доступ\nМагазин: ${text}\nTelegram ID: ${chatId}`,
       {
         reply_markup: {
           inline_keyboard: [[
@@ -103,74 +96,85 @@ bot.on('message', (msg) => {
   }
 });
 
-/* ================== CALLBACKS ================== */
+/* ================= CALLBACKS ================= */
 bot.on('callback_query', async (q) => {
   const data = q.data;
   const msg = q.message;
+
   const stores = readStores();
   const requests = readRequests();
 
-  if (msg.chat.id !== MANAGER_ID) return;
-
-  // APPROVE STORE
+  /* ---- APPROVE STORE ---- */
   if (data.startsWith('approve_')) {
-    const storeId = data.replace('approve_', '');
-
-    if (!stores[storeId]) {
-      await bot.answerCallbackQuery(q.id, { text: 'Вже оброблено' });
-      return;
-    }
-
-    stores[storeId].status = 'approved';
+    const id = data.replace('approve_', '');
+    stores[id].status = 'approved';
     saveStores(stores);
 
-    await bot.sendMessage(storeId, '✅ Доступ підтверджено', storeKeyboard);
-
+    await bot.sendMessage(id, '✅ Доступ підтверджено', storeKeyboard);
     await bot.editMessageText(
-      `✅ Доступ підтверджено\nTelegram ID: ${storeId}`,
+      `✅ Доступ підтверджено\nTelegram ID: ${id}`,
       { chat_id: msg.chat.id, message_id: msg.message_id }
     );
   }
 
-  // REJECT STORE
+  /* ---- REJECT STORE ---- */
   if (data.startsWith('reject_')) {
-    const storeId = data.replace('reject_', '');
-    delete stores[storeId];
+    const id = data.replace('reject_', '');
+    delete stores[id];
     saveStores(stores);
 
-    await bot.sendMessage(storeId, '❌ Доступ відхилено');
-
+    await bot.sendMessage(id, '❌ Доступ відхилено');
     await bot.editMessageText(
-      `❌ Доступ відхилено\nTelegram ID: ${storeId}`,
+      `❌ Доступ відхилено\nTelegram ID: ${id}`,
       { chat_id: msg.chat.id, message_id: msg.message_id }
     );
   }
 
-  // REQUEST STATUS
+  /* ---- REQUEST STATUS ---- */
   if (data.startsWith('status_')) {
-    const [_, id, status] = data.split('_');
-    const order = requests.find(o => o.id === Number(id));
+    const [, reqId, status] = data.split('_');
+    const order = requests.find(o => o.id === Number(reqId));
     if (!order) return;
 
     order.status = status;
     saveRequests(requests);
 
-    let txt = 'ℹ️ Статус оновлено';
-    if (status === 'accepted') txt = '🟡 Заявка прийнята';
-    if (status === 'formed') txt = '🟢 Заявка сформована. Очікуйте доставку';
+    // повідомлення магазину
+    if (status === 'accepted') {
+      await bot.sendMessage(order.storeId, `🟡 Заявка #${order.id} прийнята`);
+    }
 
-    await bot.sendMessage(order.storeId, txt);
+    if (status === 'formed') {
+      await bot.sendMessage(
+        order.storeId,
+        `🟢 Заявка #${order.id} сформована\nОчікуйте на доставку`
+      );
+    }
 
-    await bot.editMessageText(
-      `📦 Заявка #${id}\nСтатус: ${status}`,
-      { chat_id: msg.chat.id, message_id: msg.message_id }
-    );
+    // логіка кнопок
+    if (status === 'accepted') {
+      await bot.editMessageReplyMarkup(
+        {
+          inline_keyboard: [[
+            { text: '🟢 Сформована', callback_data: `status_${order.id}_formed` }
+          ]]
+        },
+        { chat_id: msg.chat.id, message_id: msg.message_id }
+      );
+    }
+
+    if (status === 'formed') {
+      await bot.editMessageReplyMarkup(
+        { inline_keyboard: [] },
+        { chat_id: msg.chat.id, message_id: msg.message_id }
+      );
+    }
   }
 
   bot.answerCallbackQuery(q.id);
 });
 
-/* ================== STORE ACTIONS ================== */
+/* ================= STORE ACTIONS ================= */
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
@@ -179,22 +183,20 @@ bot.on('message', (msg) => {
   const stores = readStores();
   if (!stores[chatId] || stores[chatId].status !== 'approved') return;
 
-  // CREATE ORDER
   if (text === '➕ Створити заявку') {
-    waitingForOrderText.add(chatId);
-    bot.sendMessage(chatId, '✍️ Напишіть текст заявки одним повідомленням:');
+    waitingForOrder.add(chatId);
+    bot.sendMessage(chatId, '✍️ Напишіть текст заявки одним повідомленням');
     return;
   }
 
-  // MY ORDERS
   if (text === '📄 Мої заявки') {
-    const requests = readRequests().filter(r => r.storeId === chatId);
-    if (!requests.length) {
+    const list = readRequests().filter(r => r.storeId === chatId);
+    if (!list.length) {
       bot.sendMessage(chatId, '📭 Заявок ще немає');
       return;
     }
 
-    const out = requests.map(r =>
+    const out = list.map(r =>
       `#${r.id} — ${r.status}\n${r.text}`
     ).join('\n\n');
 
@@ -202,9 +204,8 @@ bot.on('message', (msg) => {
     return;
   }
 
-  // ORDER TEXT
-  if (waitingForOrderText.has(chatId)) {
-    waitingForOrderText.delete(chatId);
+  if (waitingForOrder.has(chatId)) {
+    waitingForOrder.delete(chatId);
 
     const requests = readRequests();
     const id = requests.length + 1;
@@ -212,6 +213,7 @@ bot.on('message', (msg) => {
     const order = {
       id,
       storeId: chatId,
+      storeCode: stores[chatId].code,
       text,
       status: 'pending',
       createdAt: new Date().toISOString()
@@ -220,16 +222,15 @@ bot.on('message', (msg) => {
     requests.push(order);
     saveRequests(requests);
 
-    bot.sendMessage(chatId, `✅ Заявка #${id} відправлена`, storeKeyboard);
+    bot.sendMessage(chatId, `✅ Заявка #${id} створена`, storeKeyboard);
 
     bot.sendMessage(
       MANAGER_ID,
-      `📦 Нова заявка #${id}\n\n${text}`,
+      `📦 Нова заявка #${id}\n🏪 Магазин: ${order.storeCode}\nTelegram ID: ${chatId}\n\n${text}`,
       {
         reply_markup: {
           inline_keyboard: [[
-            { text: '🟡 Прийнята', callback_data: `status_${id}_accepted` },
-            { text: '🟢 Сформована', callback_data: `status_${id}_formed` }
+            { text: '🟡 Прийнята', callback_data: `status_${id}_accepted` }
           ]]
         }
       }
@@ -237,4 +238,4 @@ bot.on('message', (msg) => {
   }
 });
 
-console.log('🤖 Bot started and stable');
+console.log('🤖 Bot started');
