@@ -1,11 +1,11 @@
 {
-  "name": "telegram-bot-mvp",
+  "name": "telegram-order-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.64.0"
   }
 }
