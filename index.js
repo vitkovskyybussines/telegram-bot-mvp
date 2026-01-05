@@ -3,7 +3,7 @@ import TelegramBot from "node-telegram-bot-api";
 
 /*
   ПРАЦЮЄ ТІЛЬКИ ЧЕРЕЗ WEBHOOK
-  ❌ БЕЗ polling
+  ❌ БЕЗ polling 
   ❌ БЕЗ node-cron
 */
 
