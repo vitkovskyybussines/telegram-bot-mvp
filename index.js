@@ -50,6 +50,14 @@ function showStoreMenu(chatId) {
   bot.sendMessage(chatId, '🏪 Меню магазину', {
     reply_markup: {
       keyboard: [
+        [
+          {
+            text: '🛒 Каталог',
+            web_app: {
+              url: 'https://vitkovskyybussines.github.io/telegram-miniapp-catalog/'
+            }
+          }
+        ],
         ['➕ Створити заявку'],
         ['📄 Мої заявки']
       ],
@@ -82,7 +90,7 @@ bot.onText(/\/start/, (msg) => {
 /* ================= STORE ACCESS ================= */
 
 bot.on('message', (msg) => {
-  handleReminders(); // 👈 ТУТ ПЕРЕВІРКА НАГАДУВАНЬ
+  handleReminders();
 
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
@@ -118,15 +126,50 @@ bot.on('message', (msg) => {
   }
 });
 
+/* ================= MINI APP DATA ================= */
+
+bot.on('message', (msg) => {
+  if (!msg.web_app_data) return;
+
+  const chatId = msg.chat.id;
+  const data = JSON.parse(msg.web_app_data.data);
+
+  const stores = readJSON(STORES_FILE, []);
+  const store = stores.find(s => s.userId === chatId);
+  if (!store) return;
+
+  const requests = readJSON(REQUESTS_FILE, []);
+  const id = requests.length + 1;
+
+  const text =
+`Заявка з каталогу:
+${data.title} — ${data.weight} кг
+Коментар: ${data.comment || '-'}`;
+
+  const req = {
+    id,
+    userId: chatId,
+    storeCode: store.storeCode,
+    text,
+    status: 'pending',
+    createdAt: new Date().toISOString().slice(0, 10)
+  };
+
+  requests.push(req);
+  writeJSON(REQUESTS_FILE, requests);
+
+  bot.sendMessage(chatId, `✅ Заявка #${id} відправлена`);
+  sendRequestToManager(req);
+});
+
 /* ================= CALLBACKS ================= */
 
 bot.on('callback_query', async (q) => {
-  handleReminders(); // 👈 І ТУТ
+  handleReminders();
 
   const data = q.data;
   const msg = q.message;
 
-  /* ---- ACCESS ---- */
   if (data.startsWith('access_ok_')) {
     const [, , userId, storeCode] = data.split('_');
     const stores = readJSON(STORES_FILE, []);
@@ -144,7 +187,6 @@ bot.on('callback_query', async (q) => {
     await bot.editMessageReplyMarkup({ inline_keyboard: [] }, msg);
   }
 
-  /* ---- STATUS ---- */
   if (data.startsWith('status_')) {
     const [, id, status] = data.split('_');
     const requests = readJSON(REQUESTS_FILE, []);
@@ -157,121 +199,18 @@ bot.on('callback_query', async (q) => {
     if (status === 'accepted') {
       await bot.sendMessage(req.userId, `🟡 Заявка #${req.id} прийнята`);
       await bot.editMessageReplyMarkup(
-        {
-          inline_keyboard: [[
-            { text: '🟢 Сформована', callback_data: `status_${req.id}_formed` }
-          ]]
-        },
+        { inline_keyboard: [[{ text: '🟢 Сформована', callback_data: `status_${req.id}_formed` }]] },
         msg
       );
     }
 
     if (status === 'formed') {
-      await bot.sendMessage(
-        req.userId,
-        `🟢 Заявка #${req.id} сформована\nОчікуйте доставку`
-      );
+      await bot.sendMessage(req.userId, `🟢 Заявка #${req.id} сформована\nОчікуйте доставку`);
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, msg);
     }
   }
 
   bot.answerCallbackQuery(q.id);
-});
-
-/* ================= STORE ACTIONS ================= */
-
-bot.on('message', (msg) => {
-  handleReminders(); // 👈 І ТУТ
-
-  const chatId = msg.chat.id;
-  const text = msg.text?.trim();
-
-  if (chatId === MANAGER_ID || !text) return;
-
-  const stores = readJSON(STORES_FILE, []);
-  const store = stores.find(s => s.userId === chatId);
-  if (!store) return;
-
-  if (text === '➕ Створити заявку') {
-    state[chatId] = 'WAIT_REQUEST_TEXT';
-    bot.sendMessage(chatId, '✍️ Напишіть текст заявки одним повідомленням');
-    return;
-  }
-
-  if (text === '📄 Мої заявки') {
-    const requests = readJSON(REQUESTS_FILE, [])
-      .filter(r => r.userId === chatId);
-
-    if (!requests.length) {
-      bot.sendMessage(chatId, '📭 Заявок ще немає');
-      return;
-    }
-
-    requests.forEach(r => {
-      bot.sendMessage(
-        chatId,
-        `📦 Заявка #${r.id}\nСтатус: ${r.status}\n\n${r.text}`
-      );
-    });
-  }
-
-  if (state[chatId] === 'WAIT_REQUEST_TEXT') {
-    const requests = readJSON(REQUESTS_FILE, []);
-    const id = requests.length + 1;
-
-    const req = {
-      id,
-      userId: chatId,
-      storeCode: store.storeCode,
-      text,
-      status: 'pending',
-      createdAt: new Date().toISOString().slice(0, 10)
-    };
-
-    requests.push(req);
-    writeJSON(REQUESTS_FILE, requests);
-
-    bot.sendMessage(chatId, `✅ Заявка #${id} відправлена`);
-    sendRequestToManager(req);
-
-    state[chatId] = null;
-  }
-});
-
-/* ================= MANAGER FILTERS ================= */
-
-bot.on('message', (msg) => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-
-  if (chatId !== MANAGER_ID) return;
-
-  const requests = readJSON(REQUESTS_FILE, []);
-
-  if (text === '📦 Всі заявки') {
-    requests.forEach(sendRequestToManager);
-  }
-
-  if (text === '🕓 Очікуючі') {
-    requests.filter(r => r.status === 'pending')
-      .forEach(sendRequestToManager);
-  }
-
-  if (text === '🟡 Прийняті') {
-    requests.filter(r => r.status === 'accepted')
-      .forEach(sendRequestToManager);
-  }
-
-  if (text === '🏪 Заявки магазину') {
-    bot.sendMessage(chatId, '✏️ Введіть код магазину (SHOP-001)');
-    state[chatId] = 'WAIT_STORE_FILTER';
-  }
-
-  if (state[chatId] === 'WAIT_STORE_FILTER' && text.startsWith('SHOP-')) {
-    requests.filter(r => r.storeCode === text)
-      .forEach(sendRequestToManager);
-    state[chatId] = null;
-  }
 });
 
 /* ================= SEND TO MANAGER ================= */
@@ -302,15 +241,9 @@ ${r.text}`,
 
 function handleReminders() {
   const now = new Date();
-  const day = now.getDay(); // 6 = субота
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-
-  if (day === 6) return; // субота
-  if (hour < 15) return;
+  if (now.getDay() === 6 || now.getHours() < 15) return;
 
   const today = now.toISOString().slice(0, 10);
-
   const reminders = readJSON(REMINDERS_FILE, {});
   if (reminders[today]) return;
 
@@ -318,15 +251,11 @@ function handleReminders() {
   const requests = readJSON(REQUESTS_FILE, []);
 
   stores.forEach(store => {
-    const hasTodayRequest = requests.some(
+    const hasToday = requests.some(
       r => r.userId === store.userId && r.createdAt === today
     );
-
-    if (!hasTodayRequest) {
-      bot.sendMessage(
-        store.userId,
-        '⏰ Нагадування:\nВи ще не зробили заявку на сьогодні'
-      );
+    if (!hasToday) {
+      bot.sendMessage(store.userId, '⏰ Нагадування:\nВи ще не зробили заявку на сьогодні');
     }
   });
 
@@ -334,4 +263,4 @@ function handleReminders() {
   writeJSON(REMINDERS_FILE, reminders);
 }
 
-console.log('🤖 Bot started with reminders');
+console.log('🤖 Bot started with Mini App integrated');
