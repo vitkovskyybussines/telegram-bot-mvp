@@ -3,6 +3,7 @@ const fs = require('fs');
 
 const TOKEN = process.env.BOT_TOKEN;
 const MANAGER_ID = Number(process.env.MANAGER_ID);
+const MANAGER_USERNAME = 'OlegVitkovskyy';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
@@ -45,6 +46,17 @@ function nextRequestId(requests) {
    Keyboards
 ========================= */
 
+const startKeyboard = {
+  reply_markup: {
+    keyboard: [
+      ['🔐 Авторизуватись'],
+      ['📞 Звʼязок з менеджером']
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true
+  }
+};
+
 const storeKeyboard = {
   reply_markup: {
     keyboard: [['➕ Створити заявку'], ['📄 Мої заявки']],
@@ -80,16 +92,23 @@ bot.onText(/\/start/, msg => {
 
   const store = getStore(userId);
 
-  if (store && store.approved) {
+  if (!store) {
+    bot.sendMessage(
+      userId,
+      '👋 Вітаємо! Оберіть дію:',
+      startKeyboard
+    );
+    return;
+  }
+
+  if (store.approved) {
     bot.sendMessage(userId, `Ви авторизовані як ${store.storeCode}`, storeKeyboard);
-  } else if (store && !store.approved) {
+  } else {
     bot.sendMessage(
       userId,
       'Доступ заборонено. Зверніться до менеджера.',
       contactManagerKeyboard
     );
-  } else {
-    bot.sendMessage(userId, 'Введіть код магазину (SHOP-001)');
   }
 });
 
@@ -103,6 +122,29 @@ bot.on('message', msg => {
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
+    if (text === '🔐 Авторизуватись') {
+      bot.sendMessage(userId, 'Введіть код магазину (SHOP-001)');
+      return;
+    }
+
+    if (text === '📞 Звʼязок з менеджером') {
+      bot.sendMessage(
+        userId,
+        'Звʼяжіться з менеджером:',
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              {
+                text: 'Написати менеджеру',
+                url: `https://t.me/${MANAGER_USERNAME}`
+              }
+            ]]
+          }
+        }
+      );
+      return;
+    }
+
     if (userId === MANAGER_ID) {
       if (text === '📦 Всі заявки') showAllRequests(userId);
       return;
@@ -110,7 +152,6 @@ bot.on('message', msg => {
 
     const store = getStore(userId);
 
-    /* ---- Авторизація ---- */
     if (!store) {
       if (SHOP_CODE_REGEX.test(text)) {
         awaitingAuth[userId] = text;
@@ -142,7 +183,6 @@ bot.on('message', msg => {
       return;
     }
 
-    /* ---- Створення заявки ---- */
     if (awaitingRequestText[userId]) {
       createRequest(userId, store.storeCode, text);
       delete awaitingRequestText[userId];
@@ -184,7 +224,6 @@ function createRequest(userId, storeCode, text) {
   sendRequestToManager(req);
 }
 
-/* === ЗМІНЕНО: тільки кнопка "Отримана" === */
 function sendRequestToManager(req) {
   bot.sendMessage(
     MANAGER_ID,
@@ -233,7 +272,6 @@ bot.on('callback_query', q => {
     const data = q.data;
     const msg = q.message;
 
-    /* ---- Авторизація ---- */
     if (data.startsWith('auth_')) {
       const [, action, userIdStr] = data.split('_');
       const userId = Number(userIdStr);
@@ -264,7 +302,6 @@ bot.on('callback_query', q => {
       return;
     }
 
-    /* === ЗМІНЕНО: послідовні статуси === */
     if (data.startsWith('status_')) {
       const [, newStatus, idStr] = data.split('_');
       const id = Number(idStr);
