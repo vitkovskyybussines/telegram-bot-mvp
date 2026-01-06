@@ -70,7 +70,11 @@ const startKeyboard = {
 
 const storeKeyboard = {
   reply_markup: {
-    keyboard: [['➕ Створити заявку'], ['📄 Мої заявки']],
+    keyboard: [
+      ['🛒 Зробити замовлення'],
+      ['➕ Створити заявку'],
+      ['📄 Мої заявки']
+    ],
     resize_keyboard: true
   }
 };
@@ -129,6 +133,29 @@ bot.on('message', msg => {
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
+    /* === MINI APP ENTRY === */
+    if (text === '🛒 Зробити замовлення') {
+      bot.sendMessage(userId, 'Відкрийте каталог:', {
+        reply_markup: {
+          keyboard: [[
+            {
+              text: '🛒 Відкрити каталог',
+              web_app: {
+                url: 'https://YOUR-MINI-APP-URL'
+              }
+            }
+          ], ['⬅️ Назад']],
+          resize_keyboard: true
+        }
+      });
+      return;
+    }
+
+    if (text === '⬅️ Назад') {
+      bot.sendMessage(userId, 'Меню', storeKeyboard);
+      return;
+    }
+
     if (text === '🔐 Авторизуватись') {
       bot.sendMessage(userId, 'Введіть код магазину (SHOP-001)');
       return;
@@ -159,7 +186,8 @@ bot.on('message', msg => {
       if (SHOP_CODE_REGEX.test(text)) {
         awaitingAuth[userId] = text;
 
-        bot.sendMessage(MANAGER_ID,
+        bot.sendMessage(
+          MANAGER_ID,
           `🔐 Запит авторизації\nМагазин: ${text}\nUser ID: ${userId}`,
           {
             reply_markup: {
@@ -195,6 +223,27 @@ bot.on('message', msg => {
     if (text === '📄 Мої заявки') {
       showMyRequests(userId);
     }
+  } catch {}
+});
+
+/* =========================
+   MINI APP DATA
+========================= */
+
+bot.on('web_app_data', msg => {
+  try {
+    const userId = msg.from.id;
+    const store = getStore(userId);
+    if (!store || !store.approved) return;
+
+    const data = JSON.parse(msg.web_app_data.data);
+
+    let text = 'Замовлення з каталогу:\n\n';
+    data.items.forEach(i => {
+      text += `• ${i.name} (${i.weight}) × ${i.qty}\n`;
+    });
+
+    createRequest(userId, store.storeCode, text);
   } catch {}
 });
 
