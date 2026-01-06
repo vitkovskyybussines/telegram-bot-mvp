@@ -133,14 +133,14 @@ bot.on('message', msg => {
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
 
-    /* === MINI APP ENTRY === */
     if (text === '🛒 Зробити замовлення') {
       bot.sendMessage(userId, 'Відкрийте каталог:', {
         reply_markup: {
           keyboard: [[
             {
               text: '🛒 Відкрити каталог',
-              web_app: {https://telegram-miniapp-catalog.onrender.com'
+              web_app: {
+                url: 'https://telegram-miniapp-catalog.onrender.com'
               }
             }
           ], ['⬅️ Назад']],
