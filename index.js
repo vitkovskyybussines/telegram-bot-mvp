@@ -1,5 +1,6 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const TOKEN = process.env.BOT_TOKEN;
 const MANAGER_ID = Number(process.env.MANAGER_ID);
@@ -54,6 +55,37 @@ function today() {
 }
 
 /* =========================
+   initData validation
+========================= */
+
+function isValidInitData(initData) {
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    params.delete('hash');
+
+    const dataCheckString = [...params.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+
+    const secretKey = crypto
+      .createHash('sha256')
+      .update(TOKEN)
+      .digest();
+
+    const hmac = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+
+    return hmac === hash;
+  } catch {
+    return false;
+  }
+}
+
+/* =========================
    Keyboards
 ========================= */
 
@@ -71,7 +103,6 @@ const startKeyboard = {
 const storeKeyboard = {
   reply_markup: {
     keyboard: [
-      ['🛒 Зробити замовлення'],
       ['➕ Створити заявку'],
       ['📄 Мої заявки']
     ],
@@ -132,28 +163,6 @@ bot.on('message', msg => {
     const userId = msg.from.id;
     const text = msg.text;
     if (!text || text.startsWith('/')) return;
-
-    if (text === '🛒 Зробити замовлення') {
-      bot.sendMessage(userId, 'Відкрийте каталог:', {
-        reply_markup: {
-          keyboard: [[
-            {
-              text: '🛒 Відкрити каталог',
-              web_app: {
-                url: 'https://telegram-miniapp-catalog.onrender.com'
-              }
-            }
-          ], ['⬅️ Назад']],
-          resize_keyboard: true
-        }
-      });
-      return;
-    }
-
-    if (text === '⬅️ Назад') {
-      bot.sendMessage(userId, 'Меню', storeKeyboard);
-      return;
-    }
 
     if (text === '🔐 Авторизуватись') {
       bot.sendMessage(userId, 'Введіть код магазину (SHOP-001)');
@@ -235,10 +244,12 @@ bot.on('web_app_data', msg => {
     const store = getStore(userId);
     if (!store || !store.approved) return;
 
-    const data = JSON.parse(msg.web_app_data.data);
+    const payload = JSON.parse(msg.web_app_data.data);
+
+    if (!payload.initData || !isValidInitData(payload.initData)) return;
 
     let text = 'Замовлення з каталогу:\n\n';
-    data.items.forEach(i => {
+    payload.items.forEach(i => {
       text += `• ${i.name} (${i.weight}) × ${i.qty}\n`;
     });
 
