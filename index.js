@@ -140,8 +140,7 @@ bot.on('message', msg => {
           keyboard: [[
             {
               text: '🛒 Відкрити каталог',
-              web_app: {
-                url: 'https://YOUR-MINI-APP-URL'
+              web_app: {https://github.com/vitkovskyybussines/telegram-miniapp-catalog'
               }
             }
           ], ['⬅️ Назад']],
