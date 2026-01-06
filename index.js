@@ -184,6 +184,7 @@ function createRequest(userId, storeCode, text) {
   sendRequestToManager(req);
 }
 
+/* === ЗМІНЕНО: тільки кнопка "Отримана" === */
 function sendRequestToManager(req) {
   bot.sendMessage(
     MANAGER_ID,
@@ -191,8 +192,7 @@ function sendRequestToManager(req) {
     {
       reply_markup: {
         inline_keyboard: [[
-          { text: '📥 Отримана', callback_data: `status_received_${req.id}` },
-          { text: '⚙️ Оброблена', callback_data: `status_processed_${req.id}` }
+          { text: '📥 Отримана', callback_data: `status_received_${req.id}` }
         ]]
       }
     }
@@ -245,12 +245,10 @@ bot.on('callback_query', q => {
       if (action === 'accept') {
         stores.push({ userId, storeCode, approved: true });
         writeJson(STORES_FILE, stores);
-
         bot.sendMessage(userId, '✅ Авторизацію підтверджено', storeKeyboard);
       } else {
         stores.push({ userId, storeCode, approved: false });
         writeJson(STORES_FILE, stores);
-
         bot.sendMessage(
           userId,
           '❌ Доступ заборонено. Зверніться до менеджера.',
@@ -258,24 +256,71 @@ bot.on('callback_query', q => {
         );
       }
 
-      bot.editMessageReplyMarkup({}, { chat_id: msg.chat.id, message_id: msg.message_id });
+      bot.editMessageReplyMarkup({}, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
       bot.answerCallbackQuery(q.id);
       return;
     }
 
-    /* ---- Статуси ---- */
-    const [_, status, idStr] = data.split('_');
-    const id = Number(idStr);
+    /* === ЗМІНЕНО: послідовні статуси === */
+    if (data.startsWith('status_')) {
+      const [, newStatus, idStr] = data.split('_');
+      const id = Number(idStr);
 
-    const requests = readJson(REQUESTS_FILE);
-    const req = requests.find(r => r.id === id);
-    if (!req) return;
+      const requests = readJson(REQUESTS_FILE);
+      const req = requests.find(r => r.id === id);
+      if (!req) return;
 
-    req.status = status;
-    writeJson(REQUESTS_FILE, requests);
+      if (newStatus === 'received' && req.status === 'pending') {
+        req.status = 'received';
+        writeJson(REQUESTS_FILE, requests);
 
-    bot.sendMessage(req.userId, `Заявка №${id} — статус: ${status}`);
-    bot.editMessageReplyMarkup({}, { chat_id: msg.chat.id, message_id: msg.message_id });
-    bot.answerCallbackQuery(q.id);
+        bot.sendMessage(
+          req.userId,
+          `📥 Заявка №${id} отримана менеджером`
+        );
+
+        bot.editMessageReplyMarkup(
+          {
+            inline_keyboard: [[
+              { text: '⚙️ Оброблена', callback_data: `status_processed_${id}` }
+            ]]
+          },
+          {
+            chat_id: msg.chat.id,
+            message_id: msg.message_id
+          }
+        );
+
+        bot.answerCallbackQuery(q.id);
+        return;
+      }
+
+      if (newStatus === 'processed' && req.status === 'received') {
+        req.status = 'processed';
+        writeJson(REQUESTS_FILE, requests);
+
+        bot.sendMessage(
+          req.userId,
+          `✅ Заявка №${id} оброблена`
+        );
+
+        bot.editMessageReplyMarkup({}, {
+          chat_id: msg.chat.id,
+          message_id: msg.message_id
+        });
+
+        bot.answerCallbackQuery(q.id);
+        return;
+      }
+
+      bot.editMessageReplyMarkup({}, {
+        chat_id: msg.chat.id,
+        message_id: msg.message_id
+      });
+      bot.answerCallbackQuery(q.id);
+    }
   } catch {}
 });
