@@ -1,223 +1,393 @@
 const TelegramBot = require('node-telegram-bot-api');
 const fs = require('fs');
-const path = require('path');
+const crypto = require('crypto');
 
 const TOKEN = process.env.BOT_TOKEN;
 const MANAGER_ID = Number(process.env.MANAGER_ID);
+const MANAGER_USERNAME = 'OlegVitkovskyy';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-const STORES_FILE = path.join(__dirname, 'stores.json');
-const REQUESTS_FILE = path.join(__dirname, 'requests.json');
+const STORES_FILE = './stores.json';
+const REQUESTS_FILE = './requests.json';
 
-/* ================== HELPERS ================== */
+const SHOP_CODE_REGEX = /^SHOP-\d+$/;
 
-function readJSON(file) {
+let awaitingRequestText = {};
+let awaitingAuth = {};
+
+/* =========================
+   Utils
+========================= */
+
+function readJson(path) {
   try {
-    if (!fs.existsSync(file)) return [];
-    return JSON.parse(fs.readFileSync(file));
-  } catch (e) {
+    if (!fs.existsSync(path)) return [];
+    return JSON.parse(fs.readFileSync(path, 'utf8') || '[]');
+  } catch {
     return [];
   }
 }
 
-function writeJSON(file, data) {
+function writeJson(path, data) {
   try {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
-  } catch (e) {}
+    fs.writeFileSync(path, JSON.stringify(data, null, 2));
+  } catch {}
 }
 
-function isManager(id) {
-  return id === MANAGER_ID;
+function getStore(userId) {
+  return readJson(STORES_FILE).find(s => s.userId === userId);
 }
 
-function getNow() {
-  const d = new Date();
-  return d.toLocaleString('uk-UA');
+function nextRequestId(requests) {
+  return requests.length ? Math.max(...requests.map(r => r.id)) + 1 : 1;
 }
 
-/* ================== /START ================== */
+function statusText(status) {
+  if (status === 'pending') return 'Очікує підтвердження';
+  if (status === 'received') return 'Прийнято в роботу';
+  if (status === 'processed') return 'Виконано';
+  return status;
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/* =========================
+   initData validation
+========================= */
+
+function isValidInitData(initData) {
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    params.delete('hash');
+
+    const dataCheckString = [...params.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n');
+
+    const secretKey = crypto
+      .createHash('sha256')
+      .update(TOKEN)
+      .digest();
+
+    const hmac = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex');
+
+    return hmac === hash;
+  } catch {
+    return false;
+  }
+}
+
+/* =========================
+   Keyboards
+========================= */
+
+const startKeyboard = {
+  reply_markup: {
+    keyboard: [
+      ['🔐 Авторизуватись'],
+      ['📞 Звʼязок з менеджером']
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true
+  }
+};
+
+const storeKeyboard = {
+  reply_markup: {
+    keyboard: [
+      ['➕ Створити заявку'],
+      ['📄 Мої заявки']
+    ],
+    resize_keyboard: true
+  }
+};
+
+const managerKeyboard = {
+  reply_markup: {
+    keyboard: [
+      ['📦 Всі заявки (сьогодні)'],
+      ['🟡 Очікують', '🔵 В роботі'],
+      ['🟢 Виконані (сьогодні)']
+    ],
+    resize_keyboard: true
+  }
+};
+
+const contactManagerKeyboard = {
+  reply_markup: {
+    keyboard: [['📞 Звʼязатися з менеджером']],
+    resize_keyboard: true
+  }
+};
+
+/* =========================
+   /start
+========================= */
 
 bot.onText(/\/start/, msg => {
-  const chatId = msg.chat.id;
+  const userId = msg.from.id;
 
-  if (isManager(chatId)) {
-    return showManagerMenu(chatId);
+  if (userId === MANAGER_ID) {
+    bot.sendMessage(userId, 'Панель менеджера', managerKeyboard);
+    return;
   }
 
-  const stores = readJSON(STORES_FILE);
-  const store = stores.find(s => s.userId === chatId);
+  const store = getStore(userId);
 
   if (!store) {
-    return bot.sendMessage(chatId, 'Введіть код магазину для авторизації');
+    bot.sendMessage(userId, '👋 Вітаємо! Оберіть дію:', startKeyboard);
+    return;
   }
 
-  showStoreMenu(chatId);
+  if (store.approved) {
+    bot.sendMessage(userId, `Ви авторизовані як ${store.storeCode}`, storeKeyboard);
+  } else {
+    bot.sendMessage(userId, 'Доступ заборонено. Зверніться до менеджера.', contactManagerKeyboard);
+  }
 });
 
-/* ================== AUTH STORE ================== */
+/* =========================
+   Messages
+========================= */
 
 bot.on('message', msg => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
+  try {
+    const userId = msg.from.id;
+    const text = msg.text;
+    if (!text || text.startsWith('/')) return;
 
-  if (!text || text.startsWith('/')) return;
-  if (isManager(chatId)) return;
+    if (text === '🔐 Авторизуватись') {
+      bot.sendMessage(userId, 'Введіть код магазину (SHOP-001)');
+      return;
+    }
 
-  const stores = readJSON(STORES_FILE);
-  const already = stores.find(s => s.userId === chatId);
-  if (already) return;
+    if (text === '📞 Звʼязок з менеджером') {
+      bot.sendMessage(userId, 'Звʼяжіться з менеджером:', {
+        reply_markup: {
+          inline_keyboard: [[
+            { text: 'Написати менеджеру', url: `https://t.me/${MANAGER_USERNAME}` }
+          ]]
+        }
+      });
+      return;
+    }
 
-  if (!/^SHOP-\d+$/.test(text)) return;
+    if (userId === MANAGER_ID) {
+      if (text === '📦 Всі заявки (сьогодні)') showManagerRequests(r => r.createdAt === today());
+      if (text === '🟡 Очікують') showManagerRequests(r => r.status === 'pending');
+      if (text === '🔵 В роботі') showManagerRequests(r => r.status === 'received');
+      if (text === '🟢 Виконані (сьогодні)') showManagerRequests(r => r.status === 'processed' && r.createdAt === today());
+      return;
+    }
 
-  stores.push({
-    userId: chatId,
-    storeCode: text
-  });
+    const store = getStore(userId);
 
-  writeJSON(STORES_FILE, stores);
-  showStoreMenu(chatId);
+    if (!store) {
+      if (SHOP_CODE_REGEX.test(text)) {
+        awaitingAuth[userId] = text;
+
+        bot.sendMessage(
+          MANAGER_ID,
+          `🔐 Запит авторизації\nМагазин: ${text}\nUser ID: ${userId}`,
+          {
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ Прийняти', callback_data: `auth_accept_${userId}` },
+                { text: '❌ Відхилити', callback_data: `auth_reject_${userId}` }
+              ]]
+            }
+          }
+        );
+
+        bot.sendMessage(userId, 'Запит на авторизацію надіслано менеджеру');
+      }
+      return;
+    }
+
+    if (!store.approved) {
+      bot.sendMessage(userId, 'Доступ заборонено. Зверніться до менеджера.', contactManagerKeyboard);
+      return;
+    }
+
+    if (awaitingRequestText[userId]) {
+      createRequest(userId, store.storeCode, text);
+      delete awaitingRequestText[userId];
+      return;
+    }
+
+    if (text === '➕ Створити заявку') {
+      awaitingRequestText[userId] = true;
+      bot.sendMessage(userId, 'Введіть текст заявки');
+    }
+
+    if (text === '📄 Мої заявки') {
+      showMyRequests(userId);
+    }
+  } catch {}
 });
 
-/* ================== MENUS ================== */
+/* =========================
+   MINI APP DATA
+========================= */
 
-function showStoreMenu(chatId) {
-  bot.sendMessage(chatId, 'Меню магазину', {
-    reply_markup: {
-      keyboard: [
-        ['➕ Створити заявку'],
-        ['📄 Мої заявки']
-      ],
-      resize_keyboard: true
-    }
-  });
+bot.on('web_app_data', msg => {
+  try {
+    const userId = msg.from.id;
+    const store = getStore(userId);
+    if (!store || !store.approved) return;
+
+    const payload = JSON.parse(msg.web_app_data.data);
+
+    if (!payload.initData || !isValidInitData(payload.initData)) return;
+
+    let text = 'Замовлення з каталогу:\n\n';
+    payload.items.forEach(i => {
+      text += `• ${i.name} (${i.weight}) × ${i.qty}\n`;
+    });
+
+    createRequest(userId, store.storeCode, text);
+  } catch {}
+});
+
+/* =========================
+   Requests
+========================= */
+
+function createRequest(userId, storeCode, text) {
+  const requests = readJson(REQUESTS_FILE);
+  const id = nextRequestId(requests);
+
+  const req = {
+    id,
+    userId,
+    storeCode,
+    text,
+    status: 'pending',
+    createdAt: today()
+  };
+
+  requests.push(req);
+  writeJson(REQUESTS_FILE, requests);
+
+  bot.sendMessage(userId, `Заявка №${id} створена\nСтатус: Очікує підтвердження`);
+  sendRequestToManager(req);
 }
 
-function showManagerMenu(chatId) {
-  const today = new Date().toDateString();
-  const requests = readJSON(REQUESTS_FILE).filter(r =>
-    new Date(r.createdAt).toDateString() === today
-  );
-
-  const received = requests.filter(r => r.status === 'received').length;
-  const done = requests.filter(r => r.status === 'done').length;
-
-  bot.sendMessage(chatId,
-    `📊 Заявки сьогодні\n📥 Отримані: ${received}\n✔ Виконані: ${done}`, {
+function sendRequestToManager(req) {
+  bot.sendMessage(
+    MANAGER_ID,
+    `🆕 Заявка №${req.id}\n${req.storeCode}\n\n${req.text}\nСтатус: Очікує підтвердження`,
+    {
       reply_markup: {
-        keyboard: [['📦 Всі заявки']],
-        resize_keyboard: true
+        inline_keyboard: [[
+          { text: '📥 Отримана', callback_data: `status_received_${req.id}` }
+        ]]
       }
     }
   );
 }
 
-/* ================== STORE ACTIONS ================== */
+/* =========================
+   Views
+========================= */
 
-let waitingText = {};
+function showMyRequests(userId) {
+  const requests = readJson(REQUESTS_FILE).filter(r => r.userId === userId);
+  if (!requests.length) return bot.sendMessage(userId, 'Заявок немає');
 
-bot.on('message', msg => {
-  const chatId = msg.chat.id;
-  const text = msg.text;
-
-  if (text === '➕ Створити заявку') {
-    waitingText[chatId] = true;
-    return bot.sendMessage(chatId, 'Введіть текст заявки');
-  }
-
-  if (waitingText[chatId]) {
-    waitingText[chatId] = false;
-
-    const stores = readJSON(STORES_FILE);
-    const store = stores.find(s => s.userId === chatId);
-    if (!store) return;
-
-    const requests = readJSON(REQUESTS_FILE);
-    const id = requests.length + 1;
-
-    const request = {
-      id,
-      userId: chatId,
-      storeCode: store.storeCode,
-      text,
-      status: 'received',
-      createdAt: new Date().toISOString()
-    };
-
-    requests.push(request);
-    writeJSON(REQUESTS_FILE, requests);
-
-    sendRequestToManager(request);
-    bot.sendMessage(chatId, '📦 Заявка створена');
-
-    return;
-  }
-
-  if (text === '📄 Мої заявки') {
-    const requests = readJSON(REQUESTS_FILE).filter(r => r.userId === chatId);
-
-    if (!requests.length) {
-      return bot.sendMessage(chatId, 'Заявок поки немає');
-    }
-
-    requests.forEach(r => {
-      bot.sendMessage(chatId,
-        `🧾 №${r.id}\nСтатус: ${r.status === 'done' ? '✔ Виконана' : '📥 Отримана'}\n${r.text}`
-      );
-    });
-  }
-});
-
-/* ================== MANAGER REQUEST VIEW ================== */
-
-function sendRequestToManager(r) {
-  bot.sendMessage(MANAGER_ID,
-`🧾 Заявка №${r.id} | ${r.storeCode}
-📅 ${new Date(r.createdAt).toLocaleString('uk-UA')}
-
-📦 Замовлення:
-${r.text}
-
-`, {
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '📥 Отримана', callback_data: `recv_${r.id}` },
-        { text: '✔ Виконана', callback_data: `done_${r.id}` }
-      ]]
-    }
-  });
+  requests.forEach(r =>
+    bot.sendMessage(userId, `№${r.id}\nСтатус: ${statusText(r.status)}\n${r.text}`)
+  );
 }
 
-/* ================== CALLBACKS ================== */
+function showManagerRequests(filterFn) {
+  const requests = readJson(REQUESTS_FILE).filter(filterFn);
+  if (!requests.length) return bot.sendMessage(MANAGER_ID, 'Заявок немає');
+
+  requests.forEach(r =>
+    bot.sendMessage(
+      MANAGER_ID,
+      `№${r.id}\n${r.storeCode}\nСтатус: ${statusText(r.status)}\n${r.text}`
+    )
+  );
+}
+
+/* =========================
+   Callbacks
+========================= */
 
 bot.on('callback_query', q => {
   try {
     const data = q.data;
     const msg = q.message;
 
-    const requests = readJSON(REQUESTS_FILE);
-    const req = requests.find(r => r.id === Number(data.split('_')[1]));
-    if (!req) return;
+    if (data.startsWith('auth_')) {
+      const [, action, userIdStr] = data.split('_');
+      const userId = Number(userIdStr);
+      const storeCode = awaitingAuth[userId];
+      delete awaitingAuth[userId];
 
-    if (data.startsWith('recv_')) {
-      bot.sendMessage(req.userId,
-        `📦 Заявка №${req.id} прийнята\n\nМи отримали ваше замовлення.`
-      );
+      const stores = readJson(STORES_FILE);
+
+      if (action === 'accept') {
+        stores.push({ userId, storeCode, approved: true });
+        writeJson(STORES_FILE, stores);
+        bot.sendMessage(userId, '✅ Авторизацію підтверджено', storeKeyboard);
+      } else {
+        stores.push({ userId, storeCode, approved: false });
+        writeJson(STORES_FILE, stores);
+        bot.sendMessage(userId, '❌ Доступ заборонено. Зверніться до менеджера.', contactManagerKeyboard);
+      }
+
+      bot.editMessageReplyMarkup({}, { chat_id: msg.chat.id, message_id: msg.message_id });
+      bot.answerCallbackQuery(q.id);
+      return;
     }
 
-    if (data.startsWith('done_')) {
-      req.status = 'done';
-      writeJSON(REQUESTS_FILE, requests);
+    if (data.startsWith('status_')) {
+      const [, newStatus, idStr] = data.split('_');
+      const id = Number(idStr);
 
-      bot.sendMessage(req.userId,
-        `✅ Заявка №${req.id} виконана\n\nОчікуйте доставку згідно домовленостей.`
-      );
+      const requests = readJson(REQUESTS_FILE);
+      const req = requests.find(r => r.id === id);
+      if (!req) return;
+
+      if (newStatus === 'received' && req.status === 'pending') {
+        req.status = 'received';
+        writeJson(REQUESTS_FILE, requests);
+
+        bot.sendMessage(req.userId, `📦 Заявка №${id}\nСтатус: Прийнято в роботу`);
+
+        bot.editMessageReplyMarkup(
+          { inline_keyboard: [[{ text: '⚙️ Оброблена', callback_data: `status_processed_${id}` }]] },
+          { chat_id: msg.chat.id, message_id: msg.message_id }
+        );
+
+        bot.answerCallbackQuery(q.id);
+        return;
+      }
+
+      if (newStatus === 'processed' && req.status === 'received') {
+        req.status = 'processed';
+        writeJson(REQUESTS_FILE, requests);
+
+        bot.sendMessage(req.userId, `✅ Заявка №${id}\nСтатус: Виконано`);
+
+        bot.editMessageReplyMarkup({}, { chat_id: msg.chat.id, message_id: msg.message_id });
+        bot.answerCallbackQuery(q.id);
+        return;
+      }
+
+      bot.editMessageReplyMarkup({}, { chat_id: msg.chat.id, message_id: msg.message_id });
+      bot.answerCallbackQuery(q.id);
     }
-
-    bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
-      chat_id: msg.chat.id,
-      message_id: msg.message_id
-    });
-
-  } catch (e) {}
+  } catch {}
 });
